@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+duckdb
+networkx
+streamlit
+openai
+pydantic
+python-dotenv
+pandas
+faker
+pytest
+httpx
+pillow
+pytz
+reportlab

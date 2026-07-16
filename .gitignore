@@ -1,0 +1,20 @@
+# Exclude Python runtime process tracking structures
+__pycache__/
+*.pyc
+.pytest_cache/
+.pydantic_cache/
+
+# Exclude sensitive localized storage arrays (Crucial!)
+data/processed/audit.db
+data/processed/audit.db.wal
+
+# Exclude localized transaction logs and output files
+data/raw/*.csv
+*.json
+*.pdf
+
+# Exclude developer environment context files and local keys
+.env
+.venv/
+env/
+venv/
