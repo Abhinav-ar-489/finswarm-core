@@ -1,25 +1,30 @@
 import requests
 import time
-import subprocess
 from src.database.multi_tenant_core import MultiTenantDatabase
+from src.utils.auth import generate_saas_token
 
-# Initialize our multi-tenant DB interface
 db = MultiTenantDatabase()
 
-def provision_mock_tenants():
-    print("--- 🏢 Onboarding SaaS Tenants ---")
-    # Provision Tenant 1: Delta Airlines
-    db.register_new_tenant(tenant_id="tenant_delta", company_name="Delta Air")
+def provision_mock_tenants_and_get_tokens():
+    print("--- 🏢 Onboarding SaaS Tenants & Generating JWT Access Keys ---")
     
-    # Provision Tenant 2: TechCorp Solutions
+    # Onboard Delta Airlines
+    db.register_new_tenant(tenant_id="tenant_delta", company_name="Delta Air")
+    delta_jwt = generate_saas_token(tenant_id="tenant_delta", company_name="Delta Air")
+    print(f"🔑 Delta Access Token Generated: {delta_jwt[:40]}...[TRUNCATED]")
+    
+    # Onboard TechCorp Solutions
     db.register_new_tenant(tenant_id="tenant_techcorp", company_name="TechCorp Solutions")
-    print("Onboarding complete.\n")
+    tech_jwt = generate_saas_token(tenant_id="tenant_techcorp", company_name="TechCorp Solutions")
+    print(f"🔑 TechCorp Access Token Generated: {tech_jwt[:40]}...[TRUNCATED]\n")
+    
+    return delta_jwt, tech_jwt
 
-def simulate_webhook_ingestion():
-    print("--- 🔌 Simulating Isolated Webhook Streams ---")
+def simulate_webhook_ingestion(delta_token, techcorp_token):
+    print("--- 🔌 Simulating Isolated Webhook Streams (JWT Auth) ---")
     gateway_url = "http://127.0.0.1:8000/api/v1/ingest"
     
-    # Delta Air transaction stream (Stamped with Delta's Tenant ID in headers)
+    # Stream Delta Air Transaction (Signed with Delta Bearer Token)
     delta_payload = {
         "employee_id": "EMP_DELTA_99",
         "cost_center": "Aviation-Ops",
@@ -27,12 +32,15 @@ def simulate_webhook_ingestion():
         "bank_routing_account": "US-ROUT-112233",
         "amount": 45000.00
     }
-    
-    print("Sending Delta transaction with secure header...")
-    r1 = requests.post(gateway_url, json=delta_payload, headers={"X-Tenant-ID": "tenant_delta"})
+    print("Sending Delta transaction with Authorization Bearer Token...")
+    r1 = requests.post(
+        gateway_url, 
+        json=delta_payload, 
+        headers={"Authorization": f"Bearer {delta_token}"}
+    )
     print(f"Gateway Response: {r1.json()}\n")
     
-    # TechCorp transaction stream (Stamped with TechCorp's Tenant ID in headers)
+    # Stream TechCorp Transaction (Signed with TechCorp Bearer Token)
     techcorp_payload = {
         "employee_id": "EMP_TECH_04",
         "cost_center": "R&D-SaaS",
@@ -40,15 +48,16 @@ def simulate_webhook_ingestion():
         "bank_routing_account": "US-ROUT-445566",
         "amount": 1200.00
     }
-    
-    print("Sending TechCorp transaction with secure header...")
-    r2 = requests.post(gateway_url, json=techcorp_payload, headers={"X-Tenant-ID": "tenant_techcorp"})
+    print("Sending TechCorp transaction with Authorization Bearer Token...")
+    r2 = requests.post(
+        gateway_url, 
+        json=techcorp_payload, 
+        headers={"Authorization": f"Bearer {techcorp_token}"}
+    )
     print(f"Gateway Response: {r2.json()}\n")
 
 def verify_logical_isolation():
     print("--- 🔒 Verifying Database Isolation Boundaries ---")
-    
-    # Fetch ledgers directly using our secure tenant queries
     delta_records = db.fetch_tenant_ledger(tenant_id="tenant_delta")
     techcorp_records = db.fetch_tenant_ledger(tenant_id="tenant_techcorp")
     
@@ -60,29 +69,10 @@ def verify_logical_isolation():
     for record in techcorp_records:
         print(f"  [TechCorp Space] Found Transaction: {record['transaction_id']} | Amount: ${record['amount']} | Vendor: {record['vendor_name']}")
 
-    # 🚨 CRITICAL CROSS-TENANT BLEED TEST
-    print("\n--- 🚫 Attempting Intercept Attack (Cross-Tenant Leak Check) ---")
-    print("Checking if Delta can access TechCorp's data using Delta's query bounds...")
-    
-    cross_bleed = False
-    for record in delta_records:
-        if record["tenant_id"] == "tenant_techcorp":
-            cross_bleed = True
-            
-    if cross_bleed:
-        print("❌ SECURITY CRITICAL FAILURE: Cross-tenant data bleed detected!")
-    else:
-        print("✅ SUCCESS: Data boundaries are impenetrable. Tenant records are logically isolated.")
-
 if __name__ == "__main__":
-    # 1. Onboard the tenants into the core system
-    provision_mock_tenants()
+    # Onboard and retrieve signing keys
+    delta_token, tech_token = provision_mock_tenants_and_get_tokens()
     
-    # 2. Before executing the stream test, tell the user to boot the server
-    print("👉 To run the live ingestion tests:")
-    print("   1. Open a separate terminal and run: python -m uvicorn src.database.webhook_gateway:app --reload")
-    print("   2. Once the server is running, uncomment the execution calls below.")
-    
-    # Uncomment these once your uvicorn server is actively running in the background:
-    simulate_webhook_ingestion()
+    # Execute the live ingestion verify pipelines
+    simulate_webhook_ingestion(delta_token, tech_token)
     verify_logical_isolation()

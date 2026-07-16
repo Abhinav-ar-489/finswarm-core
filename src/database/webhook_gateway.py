@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from datetime import datetime
 import uuid
 from src.database.multi_tenant_core import MultiTenantDatabase
+from src.utils.auth import verify_and_decode_token
 
 app = FastAPI(title="FinSwarm Multi-Tenant SaaS Gateway")
 db = MultiTenantDatabase()
@@ -16,21 +17,32 @@ class TransactionPayload(BaseModel):
     amount: float
 
 # --- Security Dependency ---
-def get_verified_tenant(x_tenant_id: str = Header(..., description="Secure SaaS Tenant Identifier")):
+def get_verified_tenant(authorization: str = Header(..., description="Authorization Bearer Token")):
     """
-    SaaS Security Gate: Extracts and verifies the Tenant ID from request headers.
-    In production, this decodes a JWT bearer token instead.
+    SaaS Security Gate: Extracts and cryptographically verifies the JWT Bearer Token.
     """
-    if not x_tenant_id:
+    if not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing secure tenant authorization header."
+            detail="Invalid authorization format. Must use 'Bearer <token>'."
         )
     
-    # Check if this tenant is provisioned in our system
+    token = authorization.split(" ")[1]
+    
+    try:
+        # Decrypt, verify signature integrity, and check expiration
+        claims = verify_and_decode_token(token)
+        tenant_id = claims["sub"]
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e)
+        )
+    
+    # Check if this tenant exists and has an active status in our database registry
     conn = db._get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT tenant_id, subscription_status FROM tenants WHERE tenant_id = ?", (x_tenant_id,))
+    cursor.execute("SELECT tenant_id, subscription_status FROM tenants WHERE tenant_id = ?", (tenant_id,))
     tenant = cursor.fetchone()
     conn.close()
 
@@ -46,16 +58,17 @@ def get_verified_tenant(x_tenant_id: str = Header(..., description="Secure SaaS 
             detail="Tenant subscription is inactive. Please renew billing."
         )
         
-    return x_tenant_id
+    return tenant_id
 
 # --- Endpoint ---
 @app.post("/api/v1/ingest")
 async def ingest_transaction(
     payload: TransactionPayload,
-    tenant_id: str = Depends(get_verified_tenant) # Automatically isolates this request
+    tenant_id: str = Depends(get_verified_tenant) # Enforces dynamic security routing
 ):
     """
-    Secure endpoint routing streams straight to the caller's isolated ledger.
+    Secure ingestion endpoint: Decodes JWT claims, checks tenant limits,
+    and isolates transactions strictly into the verified tenant's ledger.
     """
     tx_id = f"TX_STREAM_{uuid.uuid4().hex[:6].upper()}"
     
@@ -69,7 +82,6 @@ async def ingest_transaction(
         "timestamp": datetime.utcnow().isoformat()
     }
     
-    # Save the transaction, isolated under the verified tenant
     db.write_transaction(tenant_id=tenant_id, data=transaction_data)
     
     return {
